@@ -44,14 +44,15 @@ func main(){
 	conn.WriteMessage(websocket.TextMessage, []byte("celkem skibodi"))
 
 	go readLoop(conn)
-
-	select{
-	case <-interrupt:
-		os.Exit(0)
-		err = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-    	if err != nil {
-        	log.Println("Chyba při odesílání close zprávy:", err)
-        return
-    }
+	for {
+		select{
+		case <-interrupt:
+			err = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+	    if err != nil {
+	    	log.Println("Chyba při odesílání close zprávy:", err)
+				os.Exit(1)
+	    }
+	    os.Exit(0)
+		}
 	}
 }
