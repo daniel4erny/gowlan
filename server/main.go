@@ -8,6 +8,23 @@ import (
 	"log"
 )
 
+type Hub = struct {
+	conns map[string]*websocket.Conn
+	reg_chan chan *websocket.Conn
+	del_chan chan *websocket.Conn
+	write_chan chan []byte
+}
+
+func newHub() *Hub {
+	return &Hub{
+		conns: make(map[string]*websocket.Conn),
+		reg_chan: make(chan *websocket.Conn),
+		del_chan: make(chan *websocket.Conn),
+		write_chan: make(chan []byte),
+	}
+}
+
+
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
