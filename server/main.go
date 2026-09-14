@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"net/http"
 	"os"
 	"github.com/gorilla/websocket"
@@ -28,11 +27,20 @@ func (h *Hub) Register(conn *websocket.Conn){
 	h.reg_chan <- conn
 }
 
+func (h *Hub) Delete(conn *websocket.Conn){
+	h.del_chan <- conn
+}
+
+func (h *Hub) Broadcast(message []byte) {
+    h.write_chan <- message
+}
+
 func (h *Hub) Run() {
 	for{
 		select{
 		case conn := <- h.reg_chan:
 			h.conns[conn.RemoteAddr().String()] = conn
+			log.Println("REG: " + conn.RemoteAddr().String())
 
 		case conn := <- h.del_chan:
 			_, ok := h.conns[conn.RemoteAddr().String()]
@@ -42,54 +50,65 @@ func (h *Hub) Run() {
 				conn.Close()
 			}
 
+			log.Println("DEL: " + conn.RemoteAddr().String())
+
 		case message := <- h.write_chan:
 			for id, conn := range h.conns{
 				err := conn.WriteMessage(websocket.TextMessage, message)
 
+				if err != nil {
+					log.Println(err)
+					delete(h.conns, id)
+					conn.Close()
+				}
 			} 
+
+			log.Println("MSG: " + string(message))
 		}
 	}
 }
 
-
 var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
+
+func (h *Hub) Serve(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Println("Upgrade error:", err)
+		return
+	}
+
+	h.Register(conn)
+
+	go func(){
+		defer h.Delete(conn)
+
+		for {
+			_, message, err := conn.ReadMessage()
+			if err != nil {
+				log.Println("Read error:", err)
+				break
+			}
+			h.Broadcast(message)
+		}
+	}()
 }
 
 func main(){
-	fmt.Println("Hello world!")
-
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
 
-	http.HandleFunc("/", handleConnect)
+	hub := newHub()
+	go hub.Run()
+
+	http.HandleFunc("/", hub.Serve)
+
+	log.Println("READY")
 
 	http.ListenAndServe(":"+port, nil)
-}
-
-func handleConnect(w http.ResponseWriter, r *http.Request){
-	conn, err := upgrader.Upgrade(w, r, nil)
-
-	if err != nil{
-		log.Println(err)
-		return
-	}
-
-	for {
-		messageType, p, err := conn.ReadMessage()
-		if err != nil{
-			log.Println(err)
-			return
-		}
-
-		if messageType == websocket.TextMessage {
-			log.Println(string(p))
-		} else if messageType == websocket.CloseMessage {
-			log.Println("end connection")
-			break
-		}
-	}
 }
