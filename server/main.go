@@ -8,7 +8,7 @@ import (
 	"log"
 )
 
-type Hub = struct {
+type Hub struct {
 	conns map[string]*websocket.Conn
 	reg_chan chan *websocket.Conn
 	del_chan chan *websocket.Conn
@@ -21,6 +21,33 @@ func newHub() *Hub {
 		reg_chan: make(chan *websocket.Conn),
 		del_chan: make(chan *websocket.Conn),
 		write_chan: make(chan []byte),
+	}
+}
+
+func (h *Hub) Register(conn *websocket.Conn){
+	h.reg_chan <- conn
+}
+
+func (h *Hub) Run() {
+	for{
+		select{
+		case conn := <- h.reg_chan:
+			h.conns[conn.RemoteAddr().String()] = conn
+
+		case conn := <- h.del_chan:
+			_, ok := h.conns[conn.RemoteAddr().String()]
+
+			if ok {
+				delete(h.conns, conn.RemoteAddr().String())
+				conn.Close()
+			}
+
+		case message := <- h.write_chan:
+			for id, conn := range h.conns{
+				err := conn.WriteMessage(websocket.TextMessage, message)
+
+			} 
+		}
 	}
 }
 
