@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"time"
 	"os"
 	"github.com/gorilla/websocket"
 	"log"
@@ -24,6 +25,15 @@ func newHub() *Hub {
 }
 
 func (h *Hub) Register(conn *websocket.Conn){
+	pongWait := time.Second * 15
+
+	conn.SetReadDeadline(time.Now().Add(pongWait))
+	
+	conn.SetPingHandler(func(appData string) error {
+		conn.SetReadDeadline(time.Now().Add(pongWait)) 
+		log.Printf("PING FROM: " + conn.NetConn().LocalAddr().String())
+		return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(5*time.Second))
+	})
 	h.reg_chan <- conn
 }
 

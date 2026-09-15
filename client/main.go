@@ -7,11 +7,15 @@ import (
     "bufio"
     "fmt"
     "strings"
+    "time"
 
     "github.com/gorilla/websocket"
 )
 
-
+const (
+    pingPeriod = 10 * time.Second
+    pongWait = 15 * time.Second
+)
 
 func readLoop(conn *websocket.Conn, msg_chan chan string) {
     for {
@@ -32,6 +36,28 @@ func writeLoop(write_chan chan string, reader bufio.Reader){
         }
 
         write_chan <- msg
+    }
+}
+
+func pingLoop(ping_err_chan chan bool, conn *websocket.Conn){
+    pingTicker := time.NewTicker(pingPeriod)
+    defer pingTicker.Stop()
+    
+    conn.SetReadDeadline(time.Now().Add(pongWait))
+    conn.SetPongHandler(func(string) error {
+        conn.SetReadDeadline(time.Now().Add(pongWait))
+        log.Println("PONG JE TU")
+        return nil
+    })
+
+    for range pingTicker.C {
+        conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+        log.Println("PINGUJU VRO")
+        if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+            log.Println("PING SE DOSRAL", err)
+            ping_err_chan <- true
+            return 
+        }
     }
 }
 
@@ -68,7 +94,7 @@ func main() {
     }
     host = strings.TrimSpace(host)
 
-    u := url.URL{Scheme: "wss", Host: host, Path: "/"}
+    u := url.URL{Scheme: "ws", Host: host, Path: "/"}
     log.Printf("connecting to: %s", u.String())
 
     conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
@@ -83,6 +109,8 @@ func main() {
     write_chan := make(chan string)
     go writeLoop(write_chan, *reader)
 
+    ping_err_chan := make(chan bool)
+    go pingLoop(ping_err_chan, conn)
 
     for {
         select {
@@ -94,6 +122,8 @@ func main() {
             } else {
                 sendMessage(msg_to_send, conn)
             }
+        case _ = <- ping_err_chan:
+            evalCommand("/exit", conn)
         }
     }
 }
