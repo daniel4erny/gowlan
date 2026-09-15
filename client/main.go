@@ -36,6 +36,8 @@ func writeLoop(write_chan chan string, reader bufio.Reader){
 }
 
 func evalCommand(command string, conn *websocket.Conn){
+    command = strings.TrimSpace(command)
+
     if command == "/exit" {
         err := conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
         if err != nil {
@@ -66,7 +68,7 @@ func main() {
     }
     host = strings.TrimSpace(host)
 
-    u := url.URL{Scheme: "ws", Host: host, Path: "/"}
+    u := url.URL{Scheme: "wss", Host: host, Path: "/"}
     log.Printf("connecting to: %s", u.String())
 
     conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
