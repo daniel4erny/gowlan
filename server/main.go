@@ -75,6 +75,12 @@ var upgrader = websocket.Upgrader{
 }
 
 func (h *Hub) Serve(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Upgrade") != "websocket" {
+        w.WriteHeader(http.StatusOK)
+        w.Write([]byte("WebSocket Server is alive!"))
+        return
+    }
+	
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println("Upgrade error:", err)
