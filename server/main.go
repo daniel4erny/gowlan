@@ -55,7 +55,7 @@ func (h *Hub) Run() {
 		case message := <- h.write_chan:
 			for id, conn := range h.conns{
 				err := conn.WriteMessage(websocket.TextMessage, message)
-
+				log.Printf("sending %s to %s", message, id)
 				if err != nil {
 					log.Println(err)
 					delete(h.conns, id)
