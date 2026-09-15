@@ -94,7 +94,7 @@ func main() {
     }
     host = strings.TrimSpace(host)
 
-    u := url.URL{Scheme: "ws", Host: host, Path: "/"}
+    u := url.URL{Scheme: "wss", Host: host, Path: "/"}
     log.Printf("connecting to: %s", u.String())
 
     conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
