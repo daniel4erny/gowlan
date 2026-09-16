@@ -28,18 +28,19 @@ func readLoop(conn *websocket.Conn, msg_chan chan string) {
     }
 }
 
-func writeLoop(write_chan chan string, reader bufio.Reader){
+func writeLoop(write_chan chan string, reader *bufio.Reader){
     for {
         msg, err := reader.ReadString('\n')
         if err != nil {
             log.Println(err)
+            return
         }
 
         write_chan <- msg
     }
 }
 
-func pingLoop(ping_err_chan chan bool, conn *websocket.Conn){
+func pingLoop(ping_chan chan bool, conn *websocket.Conn){
     pingTicker := time.NewTicker(pingPeriod)
     defer pingTicker.Stop()
     
@@ -51,12 +52,22 @@ func pingLoop(ping_err_chan chan bool, conn *websocket.Conn){
     })
 
     for range pingTicker.C {
-        conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-        log.Println("PINGUJU VRO")
-        if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-            log.Println("PING SE DOSRAL", err)
-            ping_err_chan <- true
-            return 
+        ping_chan <- true
+    }
+}
+
+type Output struct {
+    message string
+    msg_type int
+}
+
+func outputLoop(ping_chan chan bool, write_chan chan string, output_chan chan Output) {
+    for {
+        select {
+        case message := <- write_chan:
+            output_chan <- Output{message: message, msg_type: websocket.TextMessage}
+        case <- ping_chan:
+            output_chan <- Output{message: "ping", msg_type: websocket.PingMessage}
         }
     }
 }
@@ -74,14 +85,23 @@ func evalCommand(command string, conn *websocket.Conn){
     }
 }
 
-func sendMessage(msg_to_send string, conn *websocket.Conn){
-    err := conn.WriteMessage(websocket.TextMessage, []byte(msg_to_send))
-    if err != nil {
-        log.Println("Je to v pici: ", err)
-        os.Exit(1)
-    } else {
-        log.Println("odeslana zprava")
-    }
+func sendMessage(msg_to_send Output, conn *websocket.Conn){
+    if msg_to_send.msg_type == websocket.TextMessage {
+        err := conn.WriteMessage(websocket.TextMessage, []byte(msg_to_send.message))
+        if err != nil {
+            log.Println("Je to v pici: ", err)
+            os.Exit(1)
+        } else {
+            log.Println("MSG SENT")
+        }
+    } else if msg_to_send.msg_type == websocket.PingMessage {
+        conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+        log.Println("PINGUJU VRO")
+        if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+            log.Println("PING SE DOSRAL", err)
+            return 
+        }   
+    } 
 }
 
 func main() {
@@ -93,8 +113,14 @@ func main() {
         log.Println(err)
     }
     host = strings.TrimSpace(host)
+    var scheme string
+    if strings.HasPrefix(host, "localhost") {
+        scheme = "ws"
+    } else {
+        scheme = "wss"
+    }
 
-    u := url.URL{Scheme: "wss", Host: host, Path: "/"}
+    u := url.URL{Scheme: scheme, Host: host, Path: "/"}
     log.Printf("connecting to: %s", u.String())
 
     conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
@@ -107,23 +133,29 @@ func main() {
     go readLoop(conn, read_chan)
 
     write_chan := make(chan string)
-    go writeLoop(write_chan, *reader)
+    go writeLoop(write_chan, reader)
 
-    ping_err_chan := make(chan bool)
-    go pingLoop(ping_err_chan, conn)
+    ping_chan := make(chan bool)
+    go pingLoop(ping_chan, conn)
+
+    output_chan := make(chan Output)
+    go outputLoop(
+        ping_chan,
+        write_chan,
+        output_chan,
+    )
+
 
     for {
         select {
         case message := <- read_chan:
             log.Printf("Got a message %s", message)
-        case msg_to_send := <- write_chan:
-            if strings.HasPrefix(msg_to_send ,"/") {
-                evalCommand(msg_to_send, conn)
+        case msg_to_send := <- output_chan:
+            if strings.HasPrefix(msg_to_send.message ,"/") {
+                evalCommand(msg_to_send.message, conn)
             } else {
                 sendMessage(msg_to_send, conn)
             }
-        case _ = <- ping_err_chan:
-            evalCommand("/exit", conn)
         }
     }
-}
+}    
