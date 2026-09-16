@@ -10,6 +10,7 @@ import (
     "time"
 
     "github.com/gorilla/websocket"
+    tea "charm.land/bubbletea/v2"
 )
 
 const (
