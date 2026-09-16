@@ -11,6 +11,8 @@ import (
 
     "github.com/gorilla/websocket"
     tea "charm.land/bubbletea/v2"
+    "charm.land/bubbles/v2/textarea"
+    "charm.land/bubbles/v2/viewport"
 )
 
 const (
@@ -25,36 +27,17 @@ func readLoop(conn *websocket.Conn, msg_chan chan string) {
             log.Println("maaan gg:", err)
             return
         }
-        msg_chan <- string(message)
+        msg_chan <- "< " + string(message)
     }
 }
 
-func writeLoop(write_chan chan string, reader *bufio.Reader){
-    for {
-        msg, err := reader.ReadString('\n')
-        if err != nil {
-            log.Println(err)
-            return
-        }
-
-        write_chan <- msg
-    }
-}
-
-func pingLoop(ping_chan chan bool, conn *websocket.Conn){
-    pingTicker := time.NewTicker(pingPeriod)
-    defer pingTicker.Stop()
-    
+func setupPong(conn *websocket.Conn){
     conn.SetReadDeadline(time.Now().Add(pongWait))
     conn.SetPongHandler(func(string) error {
         conn.SetReadDeadline(time.Now().Add(pongWait))
         log.Println("PONG JE TU")
         return nil
     })
-
-    for range pingTicker.C {
-        ping_chan <- true
-    }
 }
 
 type Output struct {
@@ -62,28 +45,17 @@ type Output struct {
     msg_type int
 }
 
-func outputLoop(ping_chan chan bool, write_chan chan string, output_chan chan Output) {
-    for {
-        select {
-        case message := <- write_chan:
-            output_chan <- Output{message: message, msg_type: websocket.TextMessage}
-        case <- ping_chan:
-            output_chan <- Output{message: "ping", msg_type: websocket.PingMessage}
-        }
-    }
-}
-
-func evalCommand(command string, conn *websocket.Conn){
+func evalCommand(command string, conn *websocket.Conn) tea.Cmd {
     command = strings.TrimSpace(command)
 
     if command == "/exit" {
         err := conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
         if err != nil {
             log.Println("Chyba při odesílání close zprávy:", err)
-            os.Exit(1)
         }
-        os.Exit(0)
+        return tea.Quit
     }
+    return nil
 }
 
 func sendMessage(msg_to_send Output, conn *websocket.Conn){
@@ -105,8 +77,143 @@ func sendMessage(msg_to_send Output, conn *websocket.Conn){
     } 
 }
 
+type model struct {
+    input textarea.Model
+    output viewport.Model
+    lines []string
+    width, height int
+    conn *websocket.Conn
+    readChan chan string
+}
+
+const inputHeight = 1
+
+type logWriter struct {
+    ch chan string
+}
+
+func (w logWriter) Write(p []byte) (int, error) {
+    w.ch <- strings.TrimRight(string(p), "\n")
+    return len(p), nil
+}
+
+func (m *model) appendLine(line string) {
+    m.lines = append(m.lines, line)
+    m.output.SetContent(strings.Join(m.lines, "\n"))
+    m.output.GotoBottom()
+}
+
+func (m *model) resize(w, h int) {
+    m.width, m.height = w, h
+    m.input.SetWidth(w)
+    m.input.SetHeight(inputHeight)
+    m.output.SetWidth(w)
+    m.output.SetHeight(max(h - inputHeight - 1, 1))
+    m.output.SetContent(strings.Join(m.lines, "\n"))
+    m.output.GotoBottom()
+}
+
+type IncomingMsg string
+type PingMsg struct{}
+
+func tickPing() tea.Cmd {
+    return tea.Tick(pingPeriod, func(time.Time) tea.Msg {
+        return PingMsg{}
+    })
+}
+
+func initModel(conn *websocket.Conn, readChan chan string) model{
+    out := viewport.New()
+
+    in := textarea.New()
+    in.ShowLineNumbers = false
+    in.Prompt = "> "
+    in.SetHeight(inputHeight)
+    in.Focus()
+    in.Placeholder = "type message :D"
+
+    return model{
+        input: in, 
+        output: out,
+        conn: conn, 
+        readChan: readChan,
+    }
+}
+
+func (m model) Init() tea.Cmd {
+    return tea.Batch(
+        textarea.Blink,
+        waitForWebSocket(m.readChan),
+        tickPing(),
+    )
+}
+
+func waitForWebSocket(helper chan string) tea.Cmd {
+    return func() tea.Msg {
+        msg := <- helper
+        return IncomingMsg(msg)
+    }
+}
+
+func (m model) View() tea.View {
+    sep := strings.Repeat("─", m.width)
+    v := tea.NewView(m.output.View() + "\n" + sep + "\n" + m.input.View())
+    v.AltScreen = true
+    return v
+}
+
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+    var cmd tea.Cmd
+    var cmds []tea.Cmd
+
+    switch msg := msg.(type) {
+    case tea.WindowSizeMsg:
+        m.resize(msg.Width, msg.Height)
+        return m, nil
+
+    case tea.KeyPressMsg:
+        switch msg.String() {
+        case "ctrl+c", "esc":
+            return m, tea.Quit
+
+        case "enter":
+            val := strings.TrimSpace(m.input.Value())
+            if val != "" {
+                m.input.Reset()
+                if strings.HasPrefix(val, "/") {
+                    return m, evalCommand(val, m.conn)
+                }
+                outObj := Output{message: val, msg_type: websocket.TextMessage}
+                sendMessage(outObj, m.conn)
+            }
+            return m, nil
+        }
+
+    case PingMsg:
+        sendMessage(Output{message: "ping", msg_type: websocket.PingMessage}, m.conn)
+        return m, tickPing()
+
+    case IncomingMsg:
+        m.appendLine(string(msg))
+
+        return m, waitForWebSocket(m.readChan)
+    }
+
+    m.input, cmd = m.input.Update(msg)
+    cmds = append(cmds, cmd)
+
+    m.output, cmd = m.output.Update(msg)
+    cmds = append(cmds, cmd)
+
+    return m, tea.Batch(cmds...)
+}
+
+
 func main() {
     reader := bufio.NewReader(os.Stdin)
+    read_chan := make(chan string, 256)
+    log.SetOutput(logWriter{ch: read_chan})
+
     var host string
     fmt.Print("Type host you want to connect to: ")
     host, err := reader.ReadString('\n')
@@ -130,33 +237,11 @@ func main() {
     }
     defer conn.Close()
 
-    read_chan := make(chan string)
+    setupPong(conn)
     go readLoop(conn, read_chan)
 
-    write_chan := make(chan string)
-    go writeLoop(write_chan, reader)
-
-    ping_chan := make(chan bool)
-    go pingLoop(ping_chan, conn)
-
-    output_chan := make(chan Output)
-    go outputLoop(
-        ping_chan,
-        write_chan,
-        output_chan,
-    )
-
-
-    for {
-        select {
-        case message := <- read_chan:
-            log.Printf("Got a message %s", message)
-        case msg_to_send := <- output_chan:
-            if strings.HasPrefix(msg_to_send.message ,"/") {
-                evalCommand(msg_to_send.message, conn)
-            } else {
-                sendMessage(msg_to_send, conn)
-            }
-        }
+    p := tea.NewProgram(initModel(conn, read_chan))
+    if _, err := p.Run(); err != nil {
+        log.Fatalln(err)
     }
 }    
