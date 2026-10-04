@@ -15,7 +15,7 @@ type Hub struct {
 	write_chan chan []byte
 }
 
-func newHub() *Hub {
+func newHub() *Hub { // hub constructor
 	return &Hub{
 		conns: make(map[string]*websocket.Conn),
 		reg_chan: make(chan *websocket.Conn),
